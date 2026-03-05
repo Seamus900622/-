@@ -1,10 +1,14 @@
-/**
- * AssetFlow Core Engine - v2.0
- * 系統優化：模組化架構、數據快取與視覺強化
- */
-
 // --- 核心配置 ---
-let assets = JSON.parse(localStorage.getItem('assets')) || [];
+let assets = [];
+try {
+    const saved = localStorage.getItem('assets');
+    assets = saved ? JSON.parse(saved) : [];
+    console.log(`[AssetFlow] 成功載入 ${assets.length} 項資產`);
+} catch (e) {
+    console.error("[AssetFlow] LocalStorage 讀取失敗:", e);
+    assets = [];
+}
+
 let usdToTwdRate = 32.5;
 let assetChart = null;
 
@@ -17,8 +21,11 @@ const CATEGORY_MAP = {
 
 // --- 初始化程序 ---
 document.addEventListener('DOMContentLoaded', async () => {
+    // 立即渲染現有資產，避免起步顯示 $0
     UIManager.render();
-    await PriceService.updateAll();
+
+    // 異步啟動價格更新
+    PriceService.updateAll();
 
     // 每 2 分鐘自動同步一次
     setInterval(() => PriceService.updateAll(), 120 * 1000);
@@ -33,7 +40,7 @@ document.getElementById('add-asset-form').addEventListener('submit', async (e) =
     const symbol = symbolInput.value.toUpperCase().trim();
     const shares = parseFloat(sharesInput.value);
 
-    if (!symbol || isNaN(shares)) return;
+    if (!symbol || isNaN(shares) || shares <= 0) return;
 
     const newAsset = {
         id: Date.now(),
@@ -43,7 +50,7 @@ document.getElementById('add-asset-form').addEventListener('submit', async (e) =
         currency: 'USD',
         name: '讀取中...',
         history: [], // 儲存 24H 趨勢
-        lastUpdated: null
+        lastUpdated: new Date().toISOString()
     };
 
     assets.push(newAsset);
@@ -57,33 +64,47 @@ document.getElementById('add-asset-form').addEventListener('submit', async (e) =
 });
 
 function saveAssets() {
-    localStorage.setItem('assets', JSON.stringify(assets));
+    try {
+        localStorage.setItem('assets', JSON.stringify(assets));
+        console.log(`[AssetFlow] 已儲存 ${assets.length} 項資產`);
+    } catch (e) {
+        alert("儲存失敗！可能是因為開啟了「私密瀏覽」模式，請切換至一般分頁。");
+        console.error("[AssetFlow] 儲存失敗:", e);
+    }
 }
 
 // --- 價格服務模組 (Service Layer) ---
 const PriceService = {
     async updateAll() {
         const refreshIcon = document.getElementById('refresh-icon');
-        refreshIcon.classList.add('syncing');
+        if (refreshIcon) refreshIcon.classList.add('syncing');
 
         try {
-            // 先抓匯率
+            // 1. 優先更新匯率
             const fxUrl = `https://query1.finance.yahoo.com/v8/finance/chart/TWD=X?interval=1m&range=1d`;
             const fxData = await this.fetchWithProxy(fxUrl);
             if (fxData?.chart?.result) {
                 usdToTwdRate = fxData.chart.result[0].meta.regularMarketPrice;
+                console.log("[PriceService] 匯率更新成功:", usdToTwdRate);
             }
-        } catch (e) { console.warn("匯率更新失敗", e); }
-
-        // 分批併發請求，避免 Proxy 封鎖
-        const batchSize = 3;
-        for (let i = 0; i < assets.length; i += batchSize) {
-            const batch = assets.slice(i, i + batchSize);
-            await Promise.allSettled(batch.map(a => this.fetchSingle(a.id)));
+        } catch (e) {
+            console.warn("[PriceService] 匯率更新失敗，使用預設值", e);
         }
 
-        document.getElementById('last-sync-time').textContent = new Date().toLocaleTimeString();
-        refreshIcon.classList.remove('syncing');
+        // 2. 併發更新資產（不再分批，改用全併發但限制個案超時）
+        // 這樣可以避免其中一個卡住導致後續全掛
+        const updatePromises = assets.map(a =>
+            this.fetchSingle(a.id).catch(err => console.error(`[PriceService] ${a.symbol} 更新失敗:`, err))
+        );
+
+        await Promise.allSettled(updatePromises);
+
+        // 3. 更新 UI
+        const lastSync = document.getElementById('last-sync-time');
+        if (lastSync) lastSync.textContent = new Date().toLocaleTimeString();
+        if (refreshIcon) refreshIcon.classList.remove('syncing');
+
+        UIManager.render();
     },
 
     async fetchSingle(id) {
@@ -171,37 +192,47 @@ const PriceService = {
     },
 
     async fetchWithProxy(url) {
-        // 使用更穩定的 proxy 順序與格式
+        // 多層代理備援，手機端尤其需要多樣路徑
         const proxies = [
             `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+            `https://corsproxy.io/?${encodeURIComponent(url)}`,
             `https://thingproxy.freeboard.io/fetch/${url}`
         ];
 
         for (const p of proxies) {
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超時
+                // 縮短手機端的等待時間，5秒不回應就換下一個，避免整體卡死
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-                const res = await fetch(p, { signal: controller.signal });
+                const res = await fetch(p, {
+                    signal: controller.signal,
+                    headers: { 'Accept': 'application/json' }
+                });
                 clearTimeout(timeoutId);
 
                 if (!res.ok) continue;
 
                 const text = await res.text();
-                if (!text) continue;
+                if (!text || text.length < 20) continue;
 
                 let json;
                 try {
-                    const outerJson = JSON.parse(text);
-                    json = outerJson.contents ? JSON.parse(outerJson.contents) : outerJson;
+                    if (p.includes('allorigins')) {
+                        const wrapper = JSON.parse(text);
+                        json = typeof wrapper.contents === 'string' ? JSON.parse(wrapper.contents) : wrapper.contents;
+                    } else {
+                        json = JSON.parse(text);
+                    }
                 } catch (e) {
-                    // 如果不是 JSON，嘗試直接解析
                     continue;
                 }
 
                 if (json && json.chart) return json;
             } catch (e) {
-                console.warn(`Proxy ${p} failed:`, e.name === 'AbortError' ? 'Timeout' : e.message);
+                if (e.name !== 'AbortError') {
+                    console.warn(`[Proxy] ${p} 發生異常:`, e.message);
+                }
                 continue;
             }
         }
@@ -385,3 +416,70 @@ window.editShares = function (id) {
         PriceService.fetchSingle(id);
     }
 };
+
+// --- 資料管理工具 (Backup & Sync) ---
+const ExportImport = {
+    exportToClipboard() {
+        const data = JSON.stringify(assets);
+        navigator.clipboard.writeText(data).then(() => {
+            alert("✅ 備份代碼已複製到剪貼簿！請將其儲存在記事本中。");
+        }).catch(err => {
+            console.error('無法複製到剪貼簿', err);
+            prompt("無法自動複製，請手動複製下方程式碼：", data);
+        });
+    },
+
+    importFromPrompt() {
+        const data = prompt("請貼入您的備份代碼 (JSON)：");
+        if (data) {
+            try {
+                const importedAssets = JSON.parse(data);
+                if (Array.isArray(importedAssets)) {
+                    assets = importedAssets;
+                    saveAssets();
+                    UIManager.render();
+                    PriceService.updateAll();
+                    alert("✅ 資料導入成功！已重新載入價格。");
+                }
+            } catch (e) {
+                alert("❌ 導入失敗：無效的代碼格式。");
+            }
+        }
+    },
+
+    clearAll() {
+        if (confirm("🚨 警告：這將清空所有資產紀錄！確定嗎？")) {
+            assets = [];
+            saveAssets();
+            UIManager.render();
+            alert("資料已清空。");
+        }
+    },
+
+    updateDebugInfo() {
+        const info = document.getElementById('debug-info');
+        if (!info) return;
+        const totalItems = assets.length;
+        const storageSize = (JSON.stringify(assets).length / 1024).toFixed(2);
+        info.innerHTML = `SYSTEM V2.1.2 | Assets: ${totalItems} | Storage: ${storageSize} KB | Time: ${new Date().toLocaleTimeString()}`;
+    }
+};
+
+// 掛載到全域供 HTML 呼叫
+window.ExportImport = ExportImport;
+
+// 增強原本的儲存與更新邏輯，使其能即時更新偵錯資訊
+const wrapSaveAssets = saveAssets;
+saveAssets = function () {
+    wrapSaveAssets();
+    ExportImport.updateDebugInfo();
+};
+
+const wrapUpdateAll = PriceService.updateAll;
+PriceService.updateAll = async function () {
+    await wrapUpdateAll.apply(PriceService);
+    ExportImport.updateDebugInfo();
+};
+
+// 初始化完成後更新一次資訊
+setTimeout(() => ExportImport.updateDebugInfo(), 1000);

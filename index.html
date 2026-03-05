@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AssetFlow | 全球資產追蹤專家</title>
+    <!-- SEO & Icons -->
+    <meta name="description" content="專業級個人資產管理，即時追蹤加密貨幣、美股、台股與貴金屬。">
+    <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/3258/3258483.png">
+
+    <!-- Design System Base -->
+    <link rel="stylesheet" href="style.css">
+
+    <!-- Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+
+    <!-- Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>AssetFlow Dashboard</h1>
+            <div class="dashboard-header">
+                <div class="total-value-container">
+                    <span class="total-label">預估持倉總價值 (TWD)</span>
+                    <span id="total-amount" class="total-amount">$ 0</span>
+                    <div id="sync-status"
+                        style="font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem; display: flex; align-items: center; gap: 8px;">
+                        <i class="ph ph-arrows-clockwise" id="refresh-icon"></i>
+                        上次同步: <span id="last-sync-time">尚未同步</span>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="assetChart"></canvas>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <form id="add-asset-form" class="add-asset-form">
+                <div style="position: relative; flex: 1; max-width: 300px;">
+                    <i class="ph ph-magnifying-glass"
+                        style="position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                    <input type="text" id="symbol" placeholder="資產代碼 (如: AAPL, 2330.TW, BTC)"
+                        style="padding-left: 2.75rem;" required>
+                </div>
+                <input type="number" id="shares" placeholder="持有數量" step="any" required>
+                <button type="submit" class="btn-add">
+                    <span style="display: flex; align-items: center; gap: 8px;">
+                        <i class="ph ph-plus-circle"></i> 新增項目
+                    </span>
+                </button>
+            </form>
+
+            <div id="asset-list" class="asset-grid">
+                <!-- 由 app.js 動態生成項目 -->
+                <div class="loading" style="grid-column: 1/-1; text-align: center; padding: 4rem;">
+                    <div class="ph ph-spinner-gap" style="font-size: 2rem; animation: spin 2s linear infinite;"></div>
+                    <p style="margin-top: 1rem; color: var(--text-muted);">正在初始化資產數據...</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <style>
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        #refresh-icon.syncing {
+            animation: spin 1s linear infinite;
+            color: var(--primary);
+        }
+    </style>
+
+    <!-- Core Logic -->
+    <script src="app.js"></script>
+</body>
+
+</html>
